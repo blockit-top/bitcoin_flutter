@@ -13,6 +13,12 @@ class TransactionBuilder {
   List<Input> _inputs;
   Transaction _tx;
   Map _prevTxSet = {};
+  bool cashEnable = false;
+
+  enableCash(bool enable) {
+    this.cashEnable = enable;
+  }
+
   TransactionBuilder({NetworkType network, int maximumFeeRate}) {
     this.network = network ?? bitcoin;
     this.maximumFeeRate = maximumFeeRate ?? 2500;
@@ -106,7 +112,7 @@ class TransactionBuilder {
     // derive what we can from the scriptSig
   }
 
-  sign(int vin, ECPair keyPair, [int hashType]) {
+  sign(int vin, ECPair keyPair, [int hashType, int witnessValue]) {
     if (keyPair.network != null &&
         keyPair.network.toString().compareTo(network.toString()) != 0)
       throw new ArgumentError('Inconsistent network');
@@ -123,8 +129,19 @@ class TransactionBuilder {
       input.pubkeys = [ourPubKey];
       input.signScript = prevOutScript;
     }
-    var signatureHash =
-        this._tx.hashForSignature(vin, input.signScript, hashType);
+
+    var signatureHash = null;
+    if (cashEnable) {
+      if ((hashType & SIGHASH_BITCOINCASHBIP143) != 0) {
+        signatureHash = this
+            ._tx
+            .hashForWitnessV0(vin, input.signScript, witnessValue, hashType);
+      }
+    } else {
+      signatureHash =
+          this._tx.hashForSignature(vin, input.signScript, hashType);
+    }
+
     // enforce in order signing of public keys
     var signed = false;
     for (var i = 0; i < input.pubkeys.length; i++) {

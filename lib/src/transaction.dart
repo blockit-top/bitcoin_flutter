@@ -11,6 +11,7 @@ const DEFAULT_SEQUENCE = 0xffffffff;
 const SIGHASH_ALL = 0x01;
 const SIGHASH_NONE = 0x02;
 const SIGHASH_SINGLE = 0x03;
+const SIGHASH_BITCOINCASHBIP143 = 0x40;
 const SIGHASH_ANYONECANPAY = 0x80;
 const ADVANCED_TRANSACTION_MARKER = 0x00;
 const ADVANCED_TRANSACTION_FLAG = 0x01;
@@ -45,6 +46,180 @@ class Transaction {
 
   setInputScript(int index, Uint8List scriptSig) {
     ins[index].script = scriptSig;
+  }
+
+  getPrevoutHash(hashType) {
+    if (hashType & SIGHASH_ANYONECANPAY == 0) {
+      var buffer = new Uint8List(36 * this.ins.length);
+      var bytes = buffer.buffer.asByteData();
+      var offset = 0;
+
+      writeSlice(slice) {
+        buffer.setRange(offset, offset + slice.length, slice);
+        offset += slice.length;
+      }
+
+      writeUInt32(i) {
+        bytes.setUint32(offset, i, Endian.little);
+        offset += 4;
+      }
+
+      this.ins.forEach((txIn) {
+        writeSlice(txIn.hash);
+        writeUInt32(txIn.index);
+      });
+
+      return bcrypto.hash256(buffer);
+    }
+    return ZERO;
+  }
+
+  getSequenceHash(hashType) {
+    if ((hashType & SIGHASH_ANYONECANPAY) == 0 &&
+        (hashType & 0x1f) != SIGHASH_SINGLE &&
+        (hashType & 0x1f) != SIGHASH_NONE) {
+      var buffer = new Uint8List(4 * this.ins.length);
+      var bytes = buffer.buffer.asByteData();
+      var offset = 0;
+      writeUInt32(i) {
+        bytes.setUint32(offset, i, Endian.little);
+        offset += 4;
+      }
+
+      this.ins.forEach((txIn) {
+        writeUInt32(txIn.sequence);
+      });
+
+      return bcrypto.hash256(buffer);
+    }
+    return ZERO;
+  }
+
+  getOutputsHash(hashType, inIndex) {
+    if ((hashType & 0x1f) != SIGHASH_SINGLE &&
+        (hashType & 0x1f) != SIGHASH_NONE) {
+      // Find out the size of the outputs and write them
+      var txOutsSize = 0;
+      for (var o in outs) {
+        txOutsSize += 8 + varSliceSize(o.script);
+      }
+
+      var buffer = new Uint8List(txOutsSize);
+      var bytes = buffer.buffer.asByteData();
+      var offset = 0;
+      writeSlice(slice) {
+        buffer.setRange(offset, offset + slice.length, slice);
+        offset += slice.length;
+      }
+
+      writeUInt64(i) {
+        bytes.setUint64(offset, i, Endian.little);
+        offset += 8;
+      }
+
+      writeVarInt(i) {
+        varuint.encode(i, buffer, offset);
+        offset += varuint.encodingLength(i);
+      }
+
+      writeVarSlice(slice) {
+        writeVarInt(slice.length);
+        writeSlice(slice);
+      }
+
+      this.outs.forEach((out) {
+        writeUInt64(out.value);
+        writeVarSlice(out.script);
+      });
+
+      return bcrypto.hash256(buffer);
+    } else if ((hashType & 0x1f) == SIGHASH_SINGLE &&
+        inIndex < this.outs.length) {
+      // Write only the output specified in inIndex
+      var output = this.outs[inIndex];
+
+      var buffer = new Uint8List(8 + varSliceSize(output.script));
+      var bytes = buffer.buffer.asByteData();
+      var offset = 0;
+      writeSlice(slice) {
+        buffer.setRange(offset, offset + slice.length, slice);
+        offset += slice.length;
+      }
+
+      writeUInt64(i) {
+        bytes.setUint64(offset, i, Endian.little);
+        offset += 8;
+      }
+
+      writeVarInt(i) {
+        varuint.encode(i, buffer, offset);
+        offset += varuint.encodingLength(i);
+      }
+
+      writeVarSlice(slice) {
+        writeVarInt(slice.length);
+        writeSlice(slice);
+      }
+
+      writeUInt64(output.value);
+      writeVarSlice(output.script);
+
+      return bcrypto.hash256(buffer);
+    }
+    return ZERO;
+  }
+
+  hashForWitnessV0(inIndex, prevOutScript, value, hashType) {
+    var hashPrevouts = this.getPrevoutHash(hashType);
+    var hashSequence = this.getSequenceHash(hashType);
+    var hashOutputs = this.getOutputsHash(hashType, inIndex);
+    var buffer = new Uint8List(156 + varSliceSize(prevOutScript));
+    var bytes = buffer.buffer.asByteData();
+    var offset = 0;
+
+    writeSlice(slice) {
+      buffer.setRange(offset, offset + slice.length, slice);
+      offset += slice.length;
+    }
+
+    writeUInt32(i) {
+      bytes.setUint32(offset, i, Endian.little);
+      offset += 4;
+    }
+
+    writeInt32(i) {
+      bytes.setInt32(offset, i, Endian.little);
+      offset += 4;
+    }
+
+    writeUInt64(i) {
+      bytes.setUint64(offset, i, Endian.little);
+      offset += 8;
+    }
+
+    writeVarInt(i) {
+      varuint.encode(i, buffer, offset);
+      offset += varuint.encodingLength(i);
+    }
+
+    writeVarSlice(slice) {
+      writeVarInt(slice.length);
+      writeSlice(slice);
+    }
+
+    var input = this.ins[inIndex];
+    writeUInt32(this.version);
+    writeSlice(hashPrevouts);
+    writeSlice(hashSequence);
+    writeSlice(input.hash);
+    writeUInt32(input.index);
+    writeVarSlice(prevOutScript);
+    writeUInt64(value);
+    writeUInt32(input.sequence);
+    writeSlice(hashOutputs);
+    writeUInt32(this.locktime);
+    writeUInt32(hashType);
+    return bcrypto.hash256(buffer);
   }
 
   hashForSignature(int inIndex, Uint8List prevOutScript, int hashType) {
